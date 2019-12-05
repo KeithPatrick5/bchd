@@ -1195,6 +1195,7 @@ func (p *Peer) readMessage(encoding wire.MessageEncoding) (wire.Message, []byte,
 func (p *Peer) writeMessage(msg wire.Message, enc wire.MessageEncoding) error {
 	// Don't do anything if we're disconnecting.
 	if atomic.LoadInt32(&p.disconnect) != 0 {
+		log.Debug("AVAL: Trying to write message to disconnected peer")
 		return nil
 	}
 
@@ -2374,6 +2375,8 @@ func (p *Peer) negotiateInboundProtocol() error {
 
 	log.Debug("negotiateInboundProtocol: readRemoteVersionMsg...")
 	if err := p.readRemoteVersionMsg(); err != nil {
+		log.Debug("AVAL: negotiateInboundProtocol error reading remote version")
+		panic("AVAL:")
 		return err
 	}
 
@@ -2385,6 +2388,7 @@ func (p *Peer) negotiateInboundProtocol() error {
 	log.Debug("negotiateInboundProtocol: p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)...")
 	err := p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)
 	if err != nil {
+		log.Debug("AVAL: negotiateInboundProtocol error writing MsgVerAck")
 		panic("AVAL: negotiateInboundProtocol error writing MsgVerAck")
 		return err
 	}
