@@ -10,9 +10,9 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/gcash/bchd/bchrpc"
 	"math"
 	"net"
 	"runtime"
@@ -23,9 +23,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gcash/bchd/avalanche"
+	"github.com/gcash/bchd/bchrpc"
+	"github.com/gcash/bchd/snowglobe"
+
 	"github.com/gcash/bchutil/gcs/builder"
 
+	"github.com/gcash/bchutil"
+	"github.com/gcash/bchutil/bloom"
+
 	"github.com/gcash/bchd/addrmgr"
+	"github.com/gcash/bchd/bchec"
 	"github.com/gcash/bchd/blockchain"
 	"github.com/gcash/bchd/blockchain/indexers"
 	"github.com/gcash/bchd/chaincfg"
@@ -40,15 +48,13 @@ import (
 	"github.com/gcash/bchd/txscript"
 	"github.com/gcash/bchd/version"
 	"github.com/gcash/bchd/wire"
-	"github.com/gcash/bchutil"
-	"github.com/gcash/bchutil/bloom"
 )
 
 const (
 	// defaultServices describes the default services that are supported by
 	// the server.
 	defaultServices = wire.SFNodeNetwork | wire.SFNodeBloom |
-		wire.SFNodeCF | wire.SFNodeBitcoinCash
+		wire.SFNodeCF | wire.SFNodeBitcoinCash | wire.SFNodeAvalanche
 
 	// defaultRequiredServices describes the default services that are
 	// required to be supported by outbound peers.
@@ -284,6 +290,9 @@ type server struct {
 	// agentWhitelist is a list of whitelisted user agent substrings, no
 	// whitelisting will be applied if the list is empty or nil.
 	agentWhitelist []string
+
+	// Ava
+	avaManager *avalanche.Manager
 }
 
 // spMsg represents a message over the wire from a specific peer.
@@ -489,6 +498,10 @@ func hasServices(advertised, desired wire.ServiceFlag) bool {
 	return advertised&desired == desired
 }
 
+func hasAnyServices(advertised, desired wire.ServiceFlag) bool {
+	return advertised&desired > 0
+}
+
 // OnVersion is invoked when a peer receives a version bitcoin message
 // and is used to negotiate the protocol version details as well as kick start
 // the communications.
@@ -523,9 +536,9 @@ func (sp *serverPeer) OnVersion(_ *peer.Peer, msg *wire.MsgVersion) *wire.MsgRej
 		return wire.NewMsgReject(msg.Command(), wire.RejectNonstandard, reason)
 	}
 
-	// Reject outbound peers that are not full nodes.
-	wantServices := wire.SFNodeNetwork
-	if !isInbound && !hasServices(msg.Services, wantServices) {
+	// Reject outbound peers that are not full nodes or ava nodes.
+	wantServices := wire.SFNodeNetwork | wire.SFNodeAvalanche
+	if !isInbound && !hasAnyServices(msg.Services, wantServices) {
 		missingServices := wantServices & ^msg.Services
 		srvrLog.Debugf("Rejecting peer %s with services %v due to not "+
 			"providing desired services %v", sp.Peer, msg.Services,
@@ -571,6 +584,16 @@ func (sp *serverPeer) OnVerAck(peer *peer.Peer, msg *wire.MsgVerAck) {
 // OnXVersion is invoked when a peer receives an xversion message.
 func (sp *serverPeer) OnXVersion(_ *peer.Peer, msg *wire.MsgXVersion) {
 	sp.Peer.QueueMessage(wire.NewMsgXVerAck(), nil)
+}
+
+// OnAvaPubkey is invoked when a remote peer sends us their avalanche pubkey.
+// At this point we notify the avalanche manager of the connection.
+func (sp *serverPeer) OnAvaPubkey(p *peer.Peer, msg *wire.MsgAvaPubkey) {
+	// Tell the avalanche manager about this peer
+	// if sp.Services()&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
+	// TODO: Get SSI from msg
+	sp.server.avaManager.NewPeer(sp.Peer, nil)
+	// }
 }
 
 // OnMemPool is invoked when a peer receives a mempool bitcoin message.
@@ -1095,6 +1118,16 @@ func (sp *serverPeer) OnGetHeaders(_ *peer.Peer, msg *wire.MsgGetHeaders) {
 	sp.QueueMessage(&wire.MsgHeaders{Headers: blockHeaders}, nil)
 }
 
+// OnAvaQuery is invoked when a peer receives an ava query bitcoin message.
+func (sp *serverPeer) OnAvaQuery(p *peer.Peer, msg *wire.MsgAvaQuery) {
+	sp.server.avaManager.ProcessQuery(p, msg)
+}
+
+// OnAvaResponse is invoked when a peer receives an avaresponse bitcoin message.
+func (sp *serverPeer) OnAvaResponse(p *peer.Peer, msg *wire.MsgAvaResponse) {
+	sp.server.avaManager.ProcessQueryResponse(p, msg)
+}
+
 // OnGetCFilters is invoked when a peer receives a getcfilters bitcoin message.
 func (sp *serverPeer) OnGetCFilters(_ *peer.Peer, msg *wire.MsgGetCFilters) {
 	// Ignore getcfilters requests if not in sync.
@@ -1532,7 +1565,7 @@ func (sp *serverPeer) OnFilterLoad(_ *peer.Peer, msg *wire.MsgFilterLoad) {
 // OnGetAddr is invoked when a peer receives a getaddr bitcoin message
 // and is used to provide the peer with known addresses from the address
 // manager.
-func (sp *serverPeer) OnGetAddr(_ *peer.Peer, msg *wire.MsgGetAddr) {
+func (sp *serverPeer) OnGetAddr(p *peer.Peer, msg *wire.MsgGetAddr) {
 	// Don't return any addresses when running on the simulation test
 	// network.  This helps prevent the network from becoming another
 	// public test network since it will not be able to learn about other
@@ -1560,6 +1593,14 @@ func (sp *serverPeer) OnGetAddr(_ *peer.Peer, msg *wire.MsgGetAddr) {
 
 	// Get the current known addresses from the address manager.
 	addrCache := sp.server.addrManager.AddressCache()
+	if p.Services()&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
+		avalanchePeers := sp.server.addrManager.AvalanchePeers()
+		nonAvaPeerCount := len(addrCache) - len(avalanchePeers)
+		if nonAvaPeerCount < 0 {
+			nonAvaPeerCount = 0
+		}
+		addrCache = append(avalanchePeers, addrCache[:nonAvaPeerCount]...)
+	}
 
 	// Add our best net address for peers to discover us. If the port
 	// is 0 that indicates no worthy address was found, therefore
@@ -1580,7 +1621,7 @@ func (sp *serverPeer) OnGetAddr(_ *peer.Peer, msg *wire.MsgGetAddr) {
 
 // OnAddr is invoked when a peer receives an addr bitcoin message and is
 // used to notify the server about advertised addresses.
-func (sp *serverPeer) OnAddr(_ *peer.Peer, msg *wire.MsgAddr) {
+func (sp *serverPeer) OnAddr(p *peer.Peer, msg *wire.MsgAddr) {
 	// Ignore addresses when running on the simulation test network.  This
 	// helps prevent the network from becoming another public test network
 	// since it will not be able to learn about other peers that have not
@@ -1626,6 +1667,24 @@ func (sp *serverPeer) OnAddr(_ *peer.Peer, msg *wire.MsgAddr) {
 	// XXX bitcoind gives a 2 hour time penalty here, do we want to do the
 	// same?
 	sp.server.addrManager.AddAddresses(msg.AddrList, sp.NA())
+
+	// Connect to avalanche peers if we're not already connected to them
+	for _, na := range msg.AddrList {
+		if na.Services&wire.SFNodeAvalanche != wire.SFNodeAvalanche ||
+			sp.server.avaManager.IsAddrConnected(na) {
+			continue
+		}
+
+		netAddr, err := addrStringToNetAddr(na.IP.String() + ":" + strconv.Itoa(int(na.Port)))
+		if err != nil {
+			continue
+		}
+
+		sp.server.connManager.Connect(&connmgr.ConnReq{
+			Permanent: true,
+			Addr:      netAddr,
+		})
+	}
 }
 
 // OnReject logs all reject messages received from the remote peer.
@@ -1734,6 +1793,42 @@ func (s *server) AnnounceNewTransactions(txns []*mempool.TxDesc) {
 	// Notify the gRPC server of the new transaction.
 	if s.gRPCServer != nil {
 		s.gRPCServer.NotifyNewTransactions(txns)
+	}
+}
+
+// NotifyAvalanchePeerConnect is fired whenever the avalanche manager adds a new peer
+// to the participant pool.
+func (s *server) NotifyAvalanchePeerConnect(ssi avalanche.SignedIdentity) {
+	if s.rpcServer != nil {
+		s.rpcServer.NotifyAvalanchePeerConnect(ssi)
+	}
+
+	if s.gRPCServer != nil {
+		s.gRPCServer.NotifyAvalanchePeerConnect(ssi)
+	}
+}
+
+// NotifyAvalanchePeerDisconnect is fired whenever the avalanche manager removes a
+// peer from the participant pool.
+func (s *server) NotifyAvalanchePeerDisconnect(ssi avalanche.SignedIdentity) {
+	if s.rpcServer != nil {
+		s.rpcServer.NotifyAvalanchePeerDisconnect(ssi)
+	}
+
+	if s.gRPCServer != nil {
+		s.gRPCServer.NotifyAvalanchePeerDisconnect(ssi)
+	}
+}
+
+// NotifyAvalancheFinalization is fired whenever the avalanche manager finalizes a new
+// vertex.
+func (s *server) NotifyAvalancheFinalization(h chainhash.Hash, vr avalanche.VoteRecord) {
+	if s.rpcServer != nil {
+		s.rpcServer.NotifyAvalancheFinalization(h, vr)
+	}
+
+	if s.gRPCServer != nil {
+		s.gRPCServer.NotifyAvalancheFinalization(h, vr)
 	}
 }
 
@@ -2037,7 +2132,9 @@ func (s *server) handleAddPeerMsg(state *peerState, sp *serverPeer) bool {
 	}
 
 	// Limit max number of total peers.
-	if state.Count() >= cfg.MaxPeers {
+	// Don't enforce this for avalanche peers until the permanent peer handling
+	// situation is resolved.
+	if state.Count() >= cfg.MaxPeers && sp.Services()&wire.SFNodeAvalanche != wire.SFNodeAvalanche {
 		srvrLog.Infof("Max peers reached [%d] - disconnecting peer %s",
 			cfg.MaxPeers, sp)
 		sp.Disconnect()
@@ -2095,7 +2192,8 @@ func (s *server) handleAddPeerMsg(state *peerState, sp *serverPeer) bool {
 		// more and the peer has a protocol version new enough to
 		// include a timestamp with addresses.
 		hasTimestamp := sp.ProtocolVersion() >= wire.NetAddressTimeVersion
-		if s.addrManager.NeedMoreAddresses() && hasTimestamp {
+		if s.addrManager.NeedMoreAddresses() && hasTimestamp ||
+			sp.Services()&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
 			sp.QueueMessage(wire.NewMsgGetAddr(), nil)
 		}
 
@@ -2479,6 +2577,7 @@ func newPeerConfig(sp *serverPeer) *peer.Config {
 			OnVersion:      sp.OnVersion,
 			OnVerAck:       sp.OnVerAck,
 			OnXVersion:     sp.OnXVersion,
+			OnAvaPubkey:    sp.OnAvaPubkey,
 			OnMemPool:      sp.OnMemPool,
 			OnTx:           sp.OnTx,
 			OnBlock:        sp.OnBlock,
@@ -2503,6 +2602,8 @@ func newPeerConfig(sp *serverPeer) *peer.Config {
 			OnWrite:        sp.OnWrite,
 			OnReject:       sp.OnReject,
 			OnNotFound:     sp.OnNotFound,
+			OnAvaQuery:     sp.OnAvaQuery,
+			OnAvaResponse:  sp.OnAvaResponse,
 		},
 		AddrMe:            addrMe,
 		NewestBlock:       sp.newestBlock,
@@ -2517,6 +2618,9 @@ func newPeerConfig(sp *serverPeer) *peer.Config {
 		ProtocolVersion:   peer.MaxProtocolVersion,
 		TrickleInterval:   cfg.TrickleInterval,
 		MaxKnownInventory: uint((cfg.ExcessiveBlockSize / 1000000) * peer.DefaultMaxKnownInventory),
+
+		// Ava
+		AvalancheSignedStakedIdentityPubKey: sp.server.avaManager.Identity().PubKey,
 	}
 }
 
@@ -2529,6 +2633,7 @@ func (s *server) inboundPeerConnected(conn net.Conn) {
 	sp.isWhitelisted = isWhitelisted(conn.RemoteAddr())
 	sp.Peer = peer.NewInboundPeer(newPeerConfig(sp))
 	sp.AssociateConnection(conn)
+	srvrLog.Debug("inboundPeerConnected closing", conn.LocalAddr().String())
 	go s.peerDoneHandler(sp)
 }
 
@@ -2557,25 +2662,26 @@ func (s *server) outboundPeerConnected(c *connmgr.ConnReq, conn net.Conn) {
 	go s.peerDoneHandler(sp)
 }
 
-// peerDoneHandler handles peer disconnects by notifiying the server that it's
+// peerDoneHandler handles peer disconnects by notifying the server that it's
 // done along with other performing other desirable cleanup.
 func (s *server) peerDoneHandler(sp *serverPeer) {
+	defer close(sp.quit)
 	sp.WaitForDisconnect()
+	srvrLog.Debug("outboundPeerConnected closing", sp.LocalAddr().String())
+
 	s.donePeers <- sp
 
 	// Only tell sync manager we are gone if we ever told it we existed.
 	if sp.VerAckReceived() {
-		s.syncManager.DonePeer(sp.Peer, nil)
+		s.DonePeer(sp.Peer)
 
 		// Evict any remaining orphans that were sent by the peer.
 		numEvicted := s.txMemPool.RemoveOrphansByTag(mempool.Tag(sp.ID()))
 		if numEvicted > 0 {
 			txmpLog.Debugf("Evicted %d %s from peer %v (id %d)",
-				numEvicted, pickNoun(numEvicted, "orphan",
-					"orphans"), sp, sp.ID())
+				numEvicted, pickNoun(numEvicted, "orphan", "orphans"), sp, sp.ID())
 		}
 	}
-	close(sp.quit)
 }
 
 // peerHandler is used to handle peer operations such as adding and removing
@@ -2589,6 +2695,7 @@ func (s *server) peerHandler() {
 	// in this handler.
 	s.addrManager.Start()
 	s.syncManager.Start()
+	s.avaManager.Start()
 
 	srvrLog.Tracef("Starting peer handler")
 
@@ -2673,6 +2780,7 @@ out:
 	s.connManager.Stop()
 	s.syncManager.Stop()
 	s.addrManager.Stop()
+	s.avaManager.Stop()
 
 	// Drain channels before exiting so nothing is left waiting around
 	// to send.
@@ -2696,6 +2804,14 @@ cleanup:
 // AddPeer adds a new peer that has already been connected to the server.
 func (s *server) AddPeer(sp *serverPeer) {
 	s.newPeers <- sp
+}
+
+func (s *server) DonePeer(p *peer.Peer) {
+	s.syncManager.DonePeer(p, nil)
+
+	if p.Services()&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
+		s.avaManager.DonePeer(p)
+	}
 }
 
 // BanPeer bans a peer that has already been connected to the server by ip.
@@ -3281,8 +3397,40 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string, db database
 		cfg.FastSync = false
 	}
 
+	// Setup Ava
+	avaPrivkey, err := bchec.NewPrivateKey(bchec.S256())
+	if err != nil {
+		return nil, err
+	}
+
+	avaReceivers := []avalanche.Receiver{
+		avalanche.NewRPCReceiver(s.rpcServer),
+		avalanche.NewRPCReceiver(s.gRPCServer),
+	}
+
+	dbReceiver, err := snowglobe.NewDBReceiverForEnv(hex.EncodeToString(avaPrivkey.Serialize()))
+	if err != nil {
+		return nil, err
+	}
+	if dbReceiver != nil {
+		avaReceivers = append(avaReceivers, dbReceiver)
+	}
+
+	s.avaManager, err = avalanche.New(*avaPrivkey, avaReceivers...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get tip block and send to ava
+	blk, err := s.chain.BlockByHash(&s.chain.BestSnapshot().Hash)
+	if err != nil {
+		return nil, err
+	}
+	go s.avaManager.NewBlock(*blk, 0)
+
 	s.syncManager, err = netsync.New(&netsync.Config{
 		PeerNotifier:            &s,
+		AvaNotifier:             s.avaManager,
 		Chain:                   s.chain,
 		TxMemPool:               s.txMemPool,
 		ChainParams:             s.chainParams,
@@ -3402,6 +3550,7 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string, db database
 			Addr:      netAddr,
 			Permanent: true,
 		})
+
 	}
 
 	if !cfg.DisableRPC {
@@ -3421,6 +3570,7 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string, db database
 			ConnMgr:      &rpcConnManager{&s},
 			AddrMgr:      amgr,
 			SyncMgr:      &rpcSyncMgr{&s, s.syncManager},
+			AvaMgr:       s.avaManager,
 			TimeSource:   s.timeSource,
 			Chain:        s.chain,
 			ChainParams:  chainParams,
@@ -3452,6 +3602,7 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string, db database
 			TxIndex:     s.txIndex,
 			AddrIndex:   s.addrIndex,
 			CfIndex:     s.cfIndex,
+			Ava:         s.avaManager,
 		}, &s)
 		if err != nil {
 			return nil, err

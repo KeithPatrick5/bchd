@@ -13,13 +13,17 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"reflect"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/gcash/bchd/bchec"
+
 	"github.com/btcsuite/go-socks/socks"
 	"github.com/davecgh/go-spew/spew"
+
 	"github.com/gcash/bchd/blockchain"
 	"github.com/gcash/bchd/chaincfg"
 	"github.com/gcash/bchd/chaincfg/chainhash"
@@ -216,6 +220,15 @@ type MessageListeners struct {
 	// message.
 	OnBlockTxns func(p *Peer, msg *wire.MsgBlockTxns)
 
+	// OnAvaPubkey is invoked when a peer receives a avapubkey bitcoin message.
+	OnAvaPubkey func(p *Peer, msg *wire.MsgAvaPubkey)
+
+	// OnAvaQuery is invoked when a peer receives a avarequest bitcoin message.
+	OnAvaQuery func(p *Peer, msg *wire.MsgAvaQuery)
+
+	// OnAvaResponse is invoked when a peer receives a avaresponse bitcoin message.
+	OnAvaResponse func(p *Peer, msg *wire.MsgAvaResponse)
+
 	// OnRead is invoked when a peer receives a bitcoin message.  It
 	// consists of the number of bytes read, the message, and whether or not
 	// an error in the read occurred.  Typically, callers will opt to use
@@ -303,6 +316,8 @@ type Config struct {
 	// MaxKnownInventory is the maximum number of known inventory items we will hold
 	// in memory for this peer.
 	MaxKnownInventory uint
+
+	AvalancheSignedStakedIdentityPubKey bchec.PublicKey
 }
 
 // minUint32 is a helper function to return the minimum of two uint32s.
@@ -514,6 +529,9 @@ type Peer struct {
 	compactBlocksPreferred    bool
 	directBlockRelayPreferred bool
 	allowDirectBlockRelay     bool
+
+	// Ava
+	remoteAvalanchePubkey *bchec.PublicKey
 }
 
 // String returns the peer's address and directionality as a human-readable
@@ -697,6 +715,13 @@ func (p *Peer) Services() wire.ServiceFlag {
 	return services
 }
 
+// HasService returns whether or not the peer has the given service flag.
+//
+// This function is safe for concurrent access.
+func (p *Peer) HasService(sf wire.ServiceFlag) bool {
+	return p.Services()&sf == sf
+}
+
 // UserAgent returns the user agent of the remote peer.
 //
 // This function is safe for concurrent access.
@@ -821,6 +846,12 @@ func (p *Peer) LocalAddr() net.Addr {
 		localAddr = p.conn.LocalAddr()
 	}
 	return localAddr
+}
+
+func (p *Peer) AvalanchePubkey() *bchec.PublicKey {
+	p.flagsMtx.Lock()
+	defer p.flagsMtx.Unlock()
+	return p.remoteAvalanchePubkey
 }
 
 // BytesSent returns the total number of bytes sent by the peer.
@@ -1466,6 +1497,7 @@ out:
 		// is done.  The timer is reset below for the next iteration if
 		// needed.
 		rmsg, buf, err := p.readMessage(p.wireEncoding)
+
 		idleTimer.Stop()
 		if err != nil {
 			// In order to allow regression tests with malformed messages, don't
@@ -1474,6 +1506,9 @@ out:
 			if p.isAllowedReadError(err) {
 				log.Errorf("Allowed test error from %s: %v", p, err)
 				idleTimer.Reset(idleTimeout)
+				if p.HasService(wire.SFNodeAvalanche) {
+					log.Debugf("got readMessage error: %s %s", p.NA().IP.String(), err.Error())
+				}
 				continue
 			}
 
@@ -1496,10 +1531,16 @@ out:
 				p.PushRejectMsg("malformed", wire.RejectMalformed, errMsg, nil,
 					true)
 
-				p.Disconnect()
+				// p.Disconnect()
 			}
+			if p.HasService(wire.SFNodeAvalanche) {
+				log.Debugf("AVAL: got readMessage error: %s", err.Error())
+			}
+
 			break out
 		}
+
+		log.Debugf("got new message of type %s", reflect.TypeOf(rmsg).String())
 		atomic.StoreInt64(&p.lastRecv, time.Now().Unix())
 		p.stallControl <- stallControlMsg{sccReceiveMessage, rmsg}
 
@@ -1510,12 +1551,14 @@ out:
 			// Limit to one version message per peer.
 			p.PushRejectMsg(msg.Command(), wire.RejectDuplicate,
 				"duplicate version message", nil, true)
+
 			break out
 
 		case *wire.MsgXVersion:
 			if p.xVersionReceived {
 				log.Infof("Already received 'xversion' from peer %v -- "+
 					"disconnecting", p)
+
 				break out
 			}
 
@@ -1533,8 +1576,50 @@ out:
 				msg.Command(),
 				wire.RejectDuplicate, "duplicate verack message", nil, true,
 			)
+			log.Infof("Already received 'verack' from peer %v -- "+
+				"disconnecting", p)
 
 			break out
+
+		case *wire.MsgAvaPubkey:
+			log.Debug("Got avapubkey from", p.NA().IP.String())
+			p.flagsMtx.Lock()
+
+			// TODO: Move all this logic to the avalanche manager
+			if p.remoteAvalanchePubkey != nil {
+				log.Infof("Already received 'avapubkey' from peer %v -- "+
+					"disconnecting", p)
+				p.flagsMtx.Unlock()
+
+				break out
+			}
+
+			p.remoteAvalanchePubkey = msg.PubKey()
+			p.flagsMtx.Unlock()
+			if p.cfg.Listeners.OnAvaPubkey != nil {
+				log.Debug("Calling OnAvaPubkey: %s", reflect.TypeOf(rmsg))
+				p.cfg.Listeners.OnAvaPubkey(p, msg)
+			}
+
+		case *wire.MsgAvaQuery:
+			log.Debug("got *wire.MsgAvaQuery")
+			if p.cfg.Listeners.OnAvaQuery == nil {
+				return
+			}
+
+			invMsg := wire.NewMsgInv()
+			for _, inv := range msg.InvList {
+				invMsg.AddInvVect(inv)
+			}
+			p.cfg.Listeners.OnInv(p, invMsg)
+			p.cfg.Listeners.OnAvaQuery(p, msg)
+
+		case *wire.MsgAvaResponse:
+			log.Debug("AVAL: got *wire.MsgAvaResponse")
+			if p.cfg.Listeners.OnAvaResponse != nil {
+				p.cfg.Listeners.OnAvaResponse(p, msg)
+			}
+
 		case *wire.MsgGetAddr:
 			if p.cfg.Listeners.OnGetAddr != nil {
 				p.cfg.Listeners.OnGetAddr(p, msg)
@@ -1711,6 +1796,7 @@ out:
 	idleTimer.Stop()
 
 	// Ensure connection is closed.
+	log.Debug("p.disconnect", p.disconnect)
 	p.Disconnect()
 
 	close(p.inQuit)
@@ -2064,6 +2150,7 @@ func (p *Peer) Disconnect() {
 	}
 
 	log.Tracef("Disconnecting %s", p)
+
 	if atomic.LoadInt32(&p.connected) != 0 {
 		p.conn.Close()
 	}
@@ -2077,6 +2164,9 @@ func (p *Peer) readRemoteVersionMsg() error {
 	// Read their version message.
 	remoteMsg, _, err := p.readMessage(wire.LatestEncoding)
 	if err != nil {
+		if p.HasService(wire.SFNodeAvalanche) {
+			log.Debugf("failed to read message from avalanche node: %s", err.Error())
+		}
 		return err
 	}
 
@@ -2088,13 +2178,16 @@ func (p *Peer) readRemoteVersionMsg() error {
 		rejectMsg := wire.NewMsgReject(msg.Command(), wire.RejectMalformed,
 			reason)
 		_ = p.writeMessage(rejectMsg, wire.LatestEncoding)
+		if p.HasService(wire.SFNodeAvalanche) {
+			log.Debug("failed to write message to avalanche node")
+		}
 		return errors.New(reason)
 	}
 
 	// Detect self connections.
-	if !p.cfg.TstAllowSelfConnection && sentNonces.Exists(msg.Nonce) {
-		return errors.New("disconnecting peer connected to self")
-	}
+	// if !p.cfg.TstAllowSelfConnection && sentNonces.Exists(msg.Nonce) {
+	// 	return errors.New("disconnecting peer connected to self")
+	// }
 
 	// Negotiate the protocol version and set the services to what the remote
 	// peer advertised.
@@ -2263,6 +2356,13 @@ func (p *Peer) writeLocalVersionMsg() error {
 	return p.writeMessage(localVerMsg, wire.LatestEncoding)
 }
 
+// writeAvaJoinMsg writes our AvaJoin message to the remote peer.
+func (p *Peer) writeAvaJoinMsg() error {
+	return p.writeMessage(
+		wire.NewMsgAvaPubkey(&p.cfg.AvalancheSignedStakedIdentityPubKey),
+		wire.LatestEncoding)
+}
+
 // negotiateInboundProtocol performs the negotiation protocol for an inbound
 // peer. The events should occur in the following order, otherwise an error is
 // returned:
@@ -2271,21 +2371,45 @@ func (p *Peer) writeLocalVersionMsg() error {
 //   2. We send our version.
 //   3. We send our verack.
 //   4. Remote peer sends their verack.
+//   5. Remote peer sends their avajoin.
+//   6. We send our avajoin if they're an ava node.
 func (p *Peer) negotiateInboundProtocol() error {
+	p.cfg.TstAllowSelfConnection = true
+
+	log.Debug("negotiateInboundProtocol: readRemoteVersionMsg...")
 	if err := p.readRemoteVersionMsg(); err != nil {
 		return err
 	}
 
+	log.Debug("negotiateInboundProtocol: writeLocalVersionMsg...")
 	if err := p.writeLocalVersionMsg(); err != nil {
 		return err
 	}
 
+	log.Debug("negotiateInboundProtocol: p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)...")
 	err := p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)
 	if err != nil {
 		return err
 	}
 
-	return p.readRemoteVerAckMsg()
+	log.Debug("negotiateInboundProtocol: readRemoteVerAckMsg...")
+	if err := p.readRemoteVerAckMsg(); err != nil {
+		return err
+	}
+
+	log.Debug("negotiateInboundProtocol: p.services&wire.SFNodeAvalanche != wire.SFNodeAvalanche...")
+	if !p.HasService(wire.SFNodeAvalanche) {
+		log.Debug("negotiateInboundProtocol: not an ava node")
+		return nil
+	}
+
+	// if err := p.readRemoteAvaJoinMsg(); err != nil {
+	//
+	// }
+
+	log.Debug("negotiateInboundProtocol: we have an ava node")
+	log.Debug("negotiateInboundProtocol: readRemoteVersionMsg...")
+	return p.writeAvaJoinMsg()
 }
 
 // negotiateOutoundProtocol performs the negotiation protocol for an outbound
@@ -2296,20 +2420,39 @@ func (p *Peer) negotiateInboundProtocol() error {
 //   2. Remote peer sends their version.
 //   3. Remote peer sends their verack.
 //   4. We send our verack.
+//   5. We send our avajoin if they're an ava node.
 func (p *Peer) negotiateOutboundProtocol() error {
+	p.cfg.TstAllowSelfConnection = true
+
+	log.Debug("negotiateOutboundProtocol: writeLocalVersionMsg...")
 	if err := p.writeLocalVersionMsg(); err != nil {
 		return err
 	}
 
+	log.Debug("negotiateOutboundProtocol: readRemoteVersionMsg...")
 	if err := p.readRemoteVersionMsg(); err != nil {
 		return err
 	}
 
+	log.Debug("negotiateOutboundProtocol: readRemoteVerAckMsg...")
 	if err := p.readRemoteVerAckMsg(); err != nil {
 		return err
 	}
 
-	return p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)
+	log.Debug("negotiateOutboundProtocol: p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)...")
+	if err := p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding); err != nil {
+		return err
+	}
+
+	log.Debug("negotiateOutboundProtocol: p.services&wire.SFNodeAvalanche != wire.SFNodeAvalanche...")
+	if p.services&wire.SFNodeAvalanche != wire.SFNodeAvalanche {
+		log.Trace("negotiateOutboundProtocol: not an ava node")
+		return nil
+	}
+
+	log.Debug("negotiateOutboundProtocol: we have an ava node")
+	log.Debug("negotiateOutboundProtocol: writeAvaJoinMsg...")
+	return p.writeAvaJoinMsg()
 }
 
 // start begins processing input and output messages.
@@ -2329,10 +2472,18 @@ func (p *Peer) start() error {
 	select {
 	case err := <-negotiateErr:
 		if err != nil {
+			if p.services&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
+				log.Debug("p.inbound?", p.inbound)
+				log.Debug("err:", err.Error())
+				break
+			}
 			p.Disconnect()
 			return err
 		}
 	case <-time.After(negotiateTimeout):
+		if p.services&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
+			log.Debug("timeout")
+		}
 		p.Disconnect()
 		return errors.New("protocol negotiation timeout")
 	}
@@ -2389,6 +2540,7 @@ func (p *Peer) AssociateConnection(conn net.Conn) {
 // Disconnect.
 func (p *Peer) WaitForDisconnect() {
 	<-p.quit
+	log.Debug("p.quit has signled", p.NA().IP.String())
 }
 
 // newPeerBase returns a new base bitcoin peer based on the inbound flag.  This
