@@ -719,7 +719,7 @@ func (p *Peer) Services() wire.ServiceFlag {
 //
 // This function is safe for concurrent access.
 func (p *Peer) HasService(sf wire.ServiceFlag) bool {
-	return p.Services()&sf == sf
+	return p.Services().HasService(sf)
 }
 
 // UserAgent returns the user agent of the remote peer.
@@ -1497,7 +1497,6 @@ out:
 		// is done.  The timer is reset below for the next iteration if
 		// needed.
 		rmsg, buf, err := p.readMessage(p.wireEncoding)
-
 		idleTimer.Stop()
 		if err != nil {
 			// In order to allow regression tests with malformed messages, don't
@@ -1551,14 +1550,12 @@ out:
 			// Limit to one version message per peer.
 			p.PushRejectMsg(msg.Command(), wire.RejectDuplicate,
 				"duplicate version message", nil, true)
-
 			break out
 
 		case *wire.MsgXVersion:
 			if p.xVersionReceived {
 				log.Infof("Already received 'xversion' from peer %v -- "+
 					"disconnecting", p)
-
 				break out
 			}
 
@@ -2150,7 +2147,6 @@ func (p *Peer) Disconnect() {
 	}
 
 	log.Tracef("Disconnecting %s", p)
-
 	if atomic.LoadInt32(&p.connected) != 0 {
 		p.conn.Close()
 	}
@@ -2445,7 +2441,7 @@ func (p *Peer) negotiateOutboundProtocol() error {
 	}
 
 	log.Debug("negotiateOutboundProtocol: p.services&wire.SFNodeAvalanche != wire.SFNodeAvalanche...")
-	if p.services&wire.SFNodeAvalanche != wire.SFNodeAvalanche {
+	if !p.HasService(wire.SFNodeAvalanche) {
 		log.Trace("negotiateOutboundProtocol: not an ava node")
 		return nil
 	}
@@ -2472,7 +2468,7 @@ func (p *Peer) start() error {
 	select {
 	case err := <-negotiateErr:
 		if err != nil {
-			if p.services&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
+			if p.HasService(wire.SFNodeAvalanche) {
 				log.Debug("p.inbound?", p.inbound)
 				log.Debug("err:", err.Error())
 				break
@@ -2481,7 +2477,7 @@ func (p *Peer) start() error {
 			return err
 		}
 	case <-time.After(negotiateTimeout):
-		if p.services&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
+		if p.HasService(wire.SFNodeAvalanche) {
 			log.Debug("timeout")
 		}
 		p.Disconnect()

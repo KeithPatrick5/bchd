@@ -590,10 +590,10 @@ func (sp *serverPeer) OnXVersion(_ *peer.Peer, msg *wire.MsgXVersion) {
 // At this point we notify the avalanche manager of the connection.
 func (sp *serverPeer) OnAvaPubkey(p *peer.Peer, msg *wire.MsgAvaPubkey) {
 	// Tell the avalanche manager about this peer
-	// if sp.Services()&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
-	// TODO: Get SSI from msg
-	sp.server.avaManager.NewPeer(sp.Peer, nil)
-	// }
+	if sp.HasService(wire.SFNodeAvalanche) {
+		// TODO: Get SSI from msg
+		sp.server.avaManager.NewPeer(sp.Peer, nil)
+	}
 }
 
 // OnMemPool is invoked when a peer receives a mempool bitcoin message.
@@ -1593,7 +1593,7 @@ func (sp *serverPeer) OnGetAddr(p *peer.Peer, msg *wire.MsgGetAddr) {
 
 	// Get the current known addresses from the address manager.
 	addrCache := sp.server.addrManager.AddressCache()
-	if p.Services()&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
+	if p.HasService(wire.SFNodeAvalanche) {
 		avalanchePeers := sp.server.addrManager.AvalanchePeers()
 		nonAvaPeerCount := len(addrCache) - len(avalanchePeers)
 		if nonAvaPeerCount < 0 {
@@ -2192,8 +2192,8 @@ func (s *server) handleAddPeerMsg(state *peerState, sp *serverPeer) bool {
 		// more and the peer has a protocol version new enough to
 		// include a timestamp with addresses.
 		hasTimestamp := sp.ProtocolVersion() >= wire.NetAddressTimeVersion
-		if s.addrManager.NeedMoreAddresses() && hasTimestamp ||
-			sp.Services()&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
+		if (s.addrManager.NeedMoreAddresses() && hasTimestamp) ||
+			sp.HasService(wire.SFNodeAvalanche) {
 			sp.QueueMessage(wire.NewMsgGetAddr(), nil)
 		}
 
@@ -2665,7 +2665,6 @@ func (s *server) outboundPeerConnected(c *connmgr.ConnReq, conn net.Conn) {
 // peerDoneHandler handles peer disconnects by notifying the server that it's
 // done along with other performing other desirable cleanup.
 func (s *server) peerDoneHandler(sp *serverPeer) {
-	defer close(sp.quit)
 	sp.WaitForDisconnect()
 	srvrLog.Debug("outboundPeerConnected closing", sp.LocalAddr().String())
 
@@ -2682,6 +2681,7 @@ func (s *server) peerDoneHandler(sp *serverPeer) {
 				numEvicted, pickNoun(numEvicted, "orphan", "orphans"), sp, sp.ID())
 		}
 	}
+	close(sp.quit)
 }
 
 // peerHandler is used to handle peer operations such as adding and removing
@@ -2809,7 +2809,7 @@ func (s *server) AddPeer(sp *serverPeer) {
 func (s *server) DonePeer(p *peer.Peer) {
 	s.syncManager.DonePeer(p, nil)
 
-	if p.Services()&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
+	if p.HasService(wire.SFNodeAvalanche) {
 		s.avaManager.DonePeer(p)
 	}
 }

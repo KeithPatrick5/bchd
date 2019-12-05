@@ -666,7 +666,7 @@ func (a *AddrManager) AvalanchePeers() (addrs []*wire.NetAddress) {
 	defer a.mtx.Unlock()
 
 	for _, v := range a.addrIndex {
-		if v.na.Services&wire.SFNodeAvalanche == wire.SFNodeAvalanche {
+		if v.na.Services.HasService(wire.SFNodeAvalanche) {
 			addrs = append(addrs, v.na)
 		}
 		if len(addrs) >= getAddrMax {
