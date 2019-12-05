@@ -46,6 +46,7 @@ type (
 	peerer interface {
 		ID() int32
 		NA() *wire.NetAddress
+		Connected() bool
 		AvalanchePubkey() *bchec.PublicKey
 		QueueMessage(wire.Message, chan<- struct{})
 	}

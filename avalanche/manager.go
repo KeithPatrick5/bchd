@@ -138,19 +138,39 @@ func (m Manager) IsAddrConnected(addr *wire.NetAddress) bool {
 // NewPeer notifies the manager of a new peer to add to the pool.
 func (m *Manager) NewPeer(p peerer, ssi *SignedIdentity) {
 	log.Debugf("Adding new avalanche peer %s", p)
-	// TODO: ssi.Validate()
-	// for otherPeer := range m.peers {
-	// 	if otherPeer.AvalanchePubkey().IsEqual(p.AvalanchePubkey()) {
-	// 		log.Debugf("Avalanche peer already known %s", hex.EncodeToString(p.AvalanchePubkey().SerializeCompressed()))
-	// 		return
-	// 	}
-	// }
 
+	// Only accept connected peers
+	if !p.Connected() {
+		return
+	}
+
+	// Check if we already have a peer for this identity
+	for otherPeer := range m.peers {
+		if otherPeer.AvalanchePubkey().IsEqual(p.AvalanchePubkey()) {
+			log.Debugf("Avalanche peer already known %s", hex.EncodeToString(p.AvalanchePubkey().SerializeCompressed()))
+
+			// If the currently known peer is disconnected we'll evict it and continue
+			// adding this new peer.
+			if !otherPeer.Connected() {
+				log.Debugf("Evicting disconnected peer %s", p)
+				m.DonePeer(p)
+				break
+			}
+
+			// If we already have a peer for this identity and it's still connected
+			// then we'll just stop here.
+			return
+		}
+	}
+
+	// Add the peer to our map
 	m.peerWriteMu.Lock()
 	m.peers[p] = ssi
 	m.peerWriteMu.Unlock()
-
 	atomic.AddInt64(&m.rpcInfo.SeenPeerCount, 1)
+
+	// Send them our identity to initialize the Avalanche connection
+	p.QueueMessage(wire.NewMsgAvaPubkey(&m.identity.PubKey), nil)
 
 	// Send connection event
 	// m.receiver.PeerConnect(*ssi)

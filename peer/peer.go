@@ -2353,13 +2353,6 @@ func (p *Peer) writeLocalVersionMsg() error {
 	return p.writeMessage(localVerMsg, wire.LatestEncoding)
 }
 
-// writeAvaJoinMsg writes our AvaJoin message to the remote peer.
-func (p *Peer) writeAvaJoinMsg() error {
-	return p.writeMessage(
-		wire.NewMsgAvaPubkey(&p.cfg.AvalancheSignedStakedIdentityPubKey),
-		wire.LatestEncoding)
-}
-
 // negotiateInboundProtocol performs the negotiation protocol for an inbound
 // peer. The events should occur in the following order, otherwise an error is
 // returned:
@@ -2368,49 +2361,27 @@ func (p *Peer) writeAvaJoinMsg() error {
 //   2. We send our version.
 //   3. We send our verack.
 //   4. Remote peer sends their verack.
-//   5. Remote peer sends their avajoin.
-//   6. We send our avajoin if they're an ava node.
 func (p *Peer) negotiateInboundProtocol() error {
 	p.cfg.TstAllowSelfConnection = true
 
-	log.Debug("negotiateInboundProtocol: readRemoteVersionMsg...")
 	if err := p.readRemoteVersionMsg(); err != nil {
-		log.Debug("AVAL: negotiateInboundProtocol error reading remote version")
-		panic("AVAL:")
 		return err
 	}
 
-	log.Debug("negotiateInboundProtocol: writeLocalVersionMsg...")
 	if err := p.writeLocalVersionMsg(); err != nil {
 		return err
 	}
 
-	log.Debug("negotiateInboundProtocol: p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)...")
 	err := p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)
 	if err != nil {
-		log.Debug("AVAL: negotiateInboundProtocol error writing MsgVerAck")
-		panic("AVAL: negotiateInboundProtocol error writing MsgVerAck")
 		return err
 	}
 
-	log.Debug("negotiateInboundProtocol: readRemoteVerAckMsg...")
-	if err := p.readRemoteVerAckMsg(); err != nil {
+	err = p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)
+	if err != nil {
 		return err
 	}
-
-	log.Debug("negotiateInboundProtocol: p.services&wire.SFNodeAvalanche != wire.SFNodeAvalanche...")
-	if !p.HasService(wire.SFNodeAvalanche) {
-		log.Debug("negotiateInboundProtocol: not an ava node")
-		return nil
-	}
-
-	// if err := p.readRemoteAvaJoinMsg(); err != nil {
-	//
-	// }
-
-	log.Debug("negotiateInboundProtocol: we have an ava node")
-	log.Debug("negotiateInboundProtocol: readRemoteVersionMsg...")
-	return p.writeAvaJoinMsg()
+	return nil
 }
 
 // negotiateOutoundProtocol performs the negotiation protocol for an outbound
@@ -2421,39 +2392,22 @@ func (p *Peer) negotiateInboundProtocol() error {
 //   2. Remote peer sends their version.
 //   3. Remote peer sends their verack.
 //   4. We send our verack.
-//   5. We send our avajoin if they're an ava node.
 func (p *Peer) negotiateOutboundProtocol() error {
 	p.cfg.TstAllowSelfConnection = true
 
-	log.Debug("negotiateOutboundProtocol: writeLocalVersionMsg...")
 	if err := p.writeLocalVersionMsg(); err != nil {
 		return err
 	}
 
-	log.Debug("negotiateOutboundProtocol: readRemoteVersionMsg...")
 	if err := p.readRemoteVersionMsg(); err != nil {
 		return err
 	}
 
-	log.Debug("negotiateOutboundProtocol: readRemoteVerAckMsg...")
 	if err := p.readRemoteVerAckMsg(); err != nil {
 		return err
 	}
 
-	log.Debug("negotiateOutboundProtocol: p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)...")
-	if err := p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding); err != nil {
-		return err
-	}
-
-	log.Debug("negotiateOutboundProtocol: p.services&wire.SFNodeAvalanche != wire.SFNodeAvalanche...")
-	if !p.HasService(wire.SFNodeAvalanche) {
-		log.Trace("negotiateOutboundProtocol: not an ava node")
-		return nil
-	}
-
-	log.Debug("negotiateOutboundProtocol: we have an ava node")
-	log.Debug("negotiateOutboundProtocol: writeAvaJoinMsg...")
-	return p.writeAvaJoinMsg()
+	return p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)
 }
 
 // start begins processing input and output messages.
@@ -2497,6 +2451,11 @@ func (p *Peer) start() error {
 	go p.queueHandler()
 	go p.outHandler()
 	go p.pingHandler()
+
+	// Send the peer our ava identity
+	if err := p.writeAvaJoinMsg(); err != nil {
+		return err
+	}
 
 	return nil
 }
