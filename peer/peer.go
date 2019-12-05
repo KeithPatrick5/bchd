@@ -2385,6 +2385,7 @@ func (p *Peer) negotiateInboundProtocol() error {
 	log.Debug("negotiateInboundProtocol: p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)...")
 	err := p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)
 	if err != nil {
+		panic("AVAL: negotiateInboundProtocol error writing MsgVerAck")
 		return err
 	}
 
