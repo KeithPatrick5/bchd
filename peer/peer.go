@@ -2452,11 +2452,6 @@ func (p *Peer) start() error {
 	go p.outHandler()
 	go p.pingHandler()
 
-	// Send the peer our ava identity
-	if err := p.writeAvaJoinMsg(); err != nil {
-		return err
-	}
-
 	return nil
 }
 

@@ -589,11 +589,8 @@ func (sp *serverPeer) OnXVersion(_ *peer.Peer, msg *wire.MsgXVersion) {
 // OnAvaPubkey is invoked when a remote peer sends us their avalanche pubkey.
 // At this point we notify the avalanche manager of the connection.
 func (sp *serverPeer) OnAvaPubkey(p *peer.Peer, msg *wire.MsgAvaPubkey) {
-	// Tell the avalanche manager about this peer
-	if sp.HasService(wire.SFNodeAvalanche) {
-		// TODO: Get SSI from msg
-		sp.server.avaManager.NewPeer(sp.Peer, nil)
-	}
+	// TODO: Get SSI from msg
+	sp.server.avaManager.NewPeer(sp.Peer, nil)
 }
 
 // OnMemPool is invoked when a peer receives a mempool bitcoin message.
@@ -2634,7 +2631,7 @@ func (s *server) inboundPeerConnected(conn net.Conn) {
 	sp.Peer = peer.NewInboundPeer(newPeerConfig(sp))
 	sp.AssociateConnection(conn)
 	srvrLog.Debug("inboundPeerConnected closing", conn.LocalAddr().String())
-	go s.peerDoneHandler(sp)
+	go s.peerConnectionHandler(sp)
 }
 
 // outboundPeerConnected is invoked by the connection manager when a new
@@ -2659,13 +2656,23 @@ func (s *server) outboundPeerConnected(c *connmgr.ConnReq, conn net.Conn) {
 	sp.connReq = c
 	sp.isWhitelisted = isWhitelisted(conn.RemoteAddr())
 	sp.AssociateConnection(conn)
-	go s.peerDoneHandler(sp)
+	go s.peerConnectionHandler(sp)
+}
+
+func (s *server) peerConnectionHandler(sp *serverPeer) {
+	// If the peer supports Avalanche we'll add them to our ava addr book
+	if sp.HasService(wire.SFNodeAvalanche) {
+		sp.QueueMessage(wire.NewMsgAvaPubkey(&s.avaManager.Identity().PubKey), nil)
+	}
+
+	// Wait for the peer to disconnect and then do some cleanup
+	sp.WaitForDisconnect()
+	s.peerDoneHandler(sp)
 }
 
 // peerDoneHandler handles peer disconnects by notifying the server that it's
 // done along with other performing other desirable cleanup.
 func (s *server) peerDoneHandler(sp *serverPeer) {
-	sp.WaitForDisconnect()
 	srvrLog.Debug("outboundPeerConnected closing", sp.LocalAddr().String())
 
 	s.donePeers <- sp

@@ -169,9 +169,6 @@ func (m *Manager) NewPeer(p peerer, ssi *SignedIdentity) {
 	m.peerWriteMu.Unlock()
 	atomic.AddInt64(&m.rpcInfo.SeenPeerCount, 1)
 
-	// Send them our identity to initialize the Avalanche connection
-	p.QueueMessage(wire.NewMsgAvaPubkey(&m.identity.PubKey), nil)
-
 	// Send connection event
 	// m.receiver.PeerConnect(*ssi)
 }
