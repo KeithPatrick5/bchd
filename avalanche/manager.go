@@ -468,12 +468,6 @@ func (m *Manager) ProcessQueryResponse(p peerer, resp *wire.MsgAvaResponse) {
 
 // tick does the all the work for one cycle of the query engine.
 func (m *Manager) tick() {
-	invs := m.getInvsForTick()
-	if len(invs) == 0 {
-		return
-	}
-
-	log.Debugf("tick: have %d invs", len(invs))
 	p := m.getRandomPeer()
 	if p == nil {
 		return
@@ -486,6 +480,13 @@ func (m *Manager) tick() {
 		log.Error(err)
 		return
 	}
+
+	invs := m.getInvsForTick()
+	if len(invs) == 0 {
+		return
+	}
+
+	log.Debugf("tick: have %d invs", len(invs))
 
 	log.Debug("Sending avalanche query")
 
