@@ -558,9 +558,6 @@ func (m *Manager) getInvsForTick() []*wire.InvVect {
 		}
 	}
 
-	if len(invs) == 0 {
-		panic("stop please")
-	}
 	log.Debugf("query inv count count: %d", len(invs))
 	return invs
 }
