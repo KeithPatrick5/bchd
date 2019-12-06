@@ -36,7 +36,7 @@ var (
 	log = bchlog.Disabled
 
 	// globalTimeOffset is used to enable us to store full unix timestamps with
-	// fewer than 32 bits.
+	// fewer than 64 bits.
 	globalTimeOffset = clock.now().Unix()
 
 	// clock is used to get the current time and can be set to a fixed clock for
@@ -49,9 +49,10 @@ var (
 )
 
 type (
-	// query represents a sample request sent to another peer
+	// query represents a sample request sent to another peer.
+	// A slice is 12 bytes so we use a 4 byte timestamp for alignment.
 	query struct {
-		timestamp int64
+		timestamp uint32
 		invs      []*wire.InvVect
 	}
 

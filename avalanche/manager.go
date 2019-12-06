@@ -418,7 +418,7 @@ func (m *Manager) ProcessQueryResponse(p peerer, resp *wire.MsgAvaResponse) {
 
 	// Ignore responses to expired queries or that don't have the correct number of votes
 	if len(resp.Votes) != len(r.invs) ||
-		time.Unix(r.timestamp+globalTimeOffset, 0).Add(maxQueryAge).Before(clock.now()) {
+		time.Unix(int64(r.timestamp)+globalTimeOffset, 0).Add(maxQueryAge).Before(clock.now()) {
 		return
 	}
 
@@ -492,7 +492,7 @@ func (m *Manager) tick() {
 	// We have everything we need to create an Ava query.
 	key := queryKey(p.ID(), queryID)
 	m.queriesMu.Lock()
-	m.queries[key] = query{clock.now().Unix() - globalTimeOffset, invs}
+	m.queries[key] = query{uint32(clock.now().Unix() - globalTimeOffset), invs}
 	m.queriesMu.Unlock()
 
 	// Setup a timeout to remove the query after the expiration time.
@@ -749,6 +749,7 @@ func (m *Manager) getRandomPeer() (p peerer) {
 
 	i := len(m.peers)
 	if i == 0 {
+		log.Debug("No peers found to query")
 		return nil
 	}
 
