@@ -2377,11 +2377,7 @@ func (p *Peer) negotiateInboundProtocol() error {
 		return err
 	}
 
-	err = p.writeMessage(wire.NewMsgVerAck(), wire.LatestEncoding)
-	if err != nil {
-		return err
-	}
-	return nil
+	return p.readRemoteVerAckMsg()
 }
 
 // negotiateOutoundProtocol performs the negotiation protocol for an outbound
