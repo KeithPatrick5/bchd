@@ -1231,7 +1231,7 @@ func (p *Peer) writeMessage(msg wire.Message, enc wire.MessageEncoding) error {
 	n, err := wire.WriteMessageWithEncodingN(p.conn, msg,
 		p.ProtocolVersion(), p.cfg.ChainParams.Net, enc)
 	if p.HasService(wire.SFNodeAvalanche) && err != nil {
-		log.Debug("AVAL: error writing msg to ava peer: %s [%s]", reflect.TypeOf(&msg).String(), err.Error())\
+		log.Debug("AVAL: error writing msg to ava peer: %s [%s]", reflect.TypeOf(&msg).String(), err.Error())
 		panic(err)
 	}
 
