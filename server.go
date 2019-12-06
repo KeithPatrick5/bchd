@@ -3432,11 +3432,9 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string, db database
 	}
 
 	// Get tip block and send to ava
-	blk, err := s.chain.BlockByHash(&s.chain.BestSnapshot().Hash)
-	if err != nil {
-		return nil, err
+	if blk, err := s.chain.BlockByHash(&s.chain.BestSnapshot().Hash); err == nil {
+		go s.avaManager.NewBlock(*blk, 0)
 	}
-	go s.avaManager.NewBlock(*blk, 0)
 
 	s.syncManager, err = netsync.New(&netsync.Config{
 		PeerNotifier:            &s,
