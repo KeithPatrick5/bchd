@@ -544,7 +544,7 @@ func (m *Manager) getInvsForTick() []*wire.InvVect {
 
 		// Add this voterecord to the inv list unless we're at our inflight limit.
 		if !vr.incInflight() {
-			// log.Debug("incinflight returned false")
+			log.Debug("incinflight returned false")
 			continue
 		}
 
@@ -557,6 +557,7 @@ func (m *Manager) getInvsForTick() []*wire.InvVect {
 		}
 	}
 
+	log.Debugf("query inv count count: %d", len(invs))
 	return invs
 }
 
