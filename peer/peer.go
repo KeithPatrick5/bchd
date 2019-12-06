@@ -2172,6 +2172,9 @@ func (p *Peer) readRemoteVersionMsg() error {
 	if err != nil {
 		if p.HasService(wire.SFNodeAvalanche) {
 			log.Debugf("failed to read message from avalanche node: %s", err.Error())
+			if err.Error() == "ReadMessage: message from other network [Unknown BitcoinNet (3652501241)] wanted [MainNet]" {
+				panic("asdf")
+			}
 		}
 		return err
 	}

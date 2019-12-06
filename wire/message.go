@@ -425,9 +425,9 @@ func ReadMessageWithEncodingN(r io.Reader, pver uint32, bchnet BitcoinNet,
 	if hdr.magic != bchnet {
 		fmt.Println("given magic:", hdr.magic)
 		fmt.Println("bchnet magic:", bchnet)
-		discardInput(r, hdr.length)
-		str := fmt.Sprintf("message from other network [%v] wanted [%v]", hdr.magic, bchnet)
-		return totalBytes, nil, nil, messageError("ReadMessage", str)
+		// discardInput(r, hdr.length)
+		// str := fmt.Sprintf("message from other network [%v] wanted [%v]", hdr.magic, bchnet)
+		// return totalBytes, nil, nil, messageError("ReadMessage", str)
 	}
 
 	// Check for malformed commands.
