@@ -636,6 +636,9 @@ func (m *Manager) finalizeBlock(hash chainhash.Hash, vr VoteRecord) {
 func (m *Manager) incomingEdgeHashes(t vertexType, hash chainhash.Hash) []chainhash.Hash {
 	if t == typeBlock {
 		block := m.blocks[hash]
+		if block == nil {
+			return nil
+		}
 		hashes := make([]chainhash.Hash, 1+len(block.Transactions()))
 		hashes[0] = block.MsgBlock().Header.PrevBlock
 
