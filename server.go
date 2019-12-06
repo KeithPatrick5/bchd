@@ -3410,9 +3410,12 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string, db database
 		return nil, err
 	}
 
-	avaReceivers := []avalanche.Receiver{
-		avalanche.NewRPCReceiver(s.rpcServer),
-		avalanche.NewRPCReceiver(s.gRPCServer),
+	avaReceivers := []avalanche.Receiver{}
+	if s.rpcServer != nil {
+		avaReceivers = append(avaReceivers, avalanche.NewRPCReceiver(s.rpcServer))
+	}
+	if s.gRPCServer != nil {
+		avaReceivers = append(avaReceivers, avalanche.NewRPCReceiver(s.gRPCServer))
 	}
 
 	dbReceiver, err := snowglobe.NewDBReceiverForEnv(hex.EncodeToString(avaPrivkey.Serialize()))
