@@ -1223,9 +1223,18 @@ func (p *Peer) writeMessage(msg wire.Message, enc wire.MessageEncoding) error {
 		return spew.Sdump(buf.Bytes())
 	}))
 
+	if p.HasService(wire.SFNodeAvalanche) {
+		log.Debug("AVAL: writing msg to ava peer: %s", reflect.TypeOf(&msg).String())
+	}
+
 	// Write the message to the peer.
 	n, err := wire.WriteMessageWithEncodingN(p.conn, msg,
 		p.ProtocolVersion(), p.cfg.ChainParams.Net, enc)
+	if p.HasService(wire.SFNodeAvalanche) && err != nil {
+		log.Debug("AVAL: error writing msg to ava peer: %s [%s]", reflect.TypeOf(&msg).String(), err.Error())\
+		panic(err)
+	}
+
 	atomic.AddUint64(&p.bytesSent, uint64(n))
 	if p.cfg.Listeners.OnWrite != nil {
 		p.cfg.Listeners.OnWrite(p, n, msg, err)
