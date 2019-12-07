@@ -1609,7 +1609,7 @@ out:
 			}
 
 		case *wire.MsgAvaQuery:
-			log.Debug("got *wire.MsgAvaQuery")
+			log.Debug("AVAL: got *wire.MsgAvaQuery")
 			if p.cfg.Listeners.OnAvaQuery == nil {
 				return
 			}
@@ -2002,6 +2002,8 @@ out:
 		select {
 		case msg := <-p.sendQueue:
 			switch m := msg.msg.(type) {
+			case *wire.MsgAvaQuery:
+				log.Debug("AVAL: sending MsgAvaQuery message")
 			case *wire.MsgPing:
 				// Only expects a pong message in later protocol
 				// versions.  Also set up statistics.

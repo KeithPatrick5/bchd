@@ -473,7 +473,7 @@ func (m *Manager) tick() {
 		return
 	}
 
-	log.Debug("sending to peer", p.NA().IP.String())
+	log.Debug("found queryable peer ", p.NA().IP.String())
 
 	queryID, err := wire.RandomUint64()
 	if err != nil {
