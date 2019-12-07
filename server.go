@@ -1122,6 +1122,7 @@ func (sp *serverPeer) OnAvaQuery(p *peer.Peer, msg *wire.MsgAvaQuery) {
 
 // OnAvaResponse is invoked when a peer receives an avaresponse bitcoin message.
 func (sp *serverPeer) OnAvaResponse(p *peer.Peer, msg *wire.MsgAvaResponse) {
+	panic("OnAvaResponse")
 	sp.server.avaManager.ProcessQueryResponse(p, msg)
 }
 
