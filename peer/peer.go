@@ -2015,6 +2015,7 @@ out:
 
 			p.stallControl <- stallControlMsg{sccSendMessage, msg.msg}
 
+			log.Debug("sending message of type: %s", reflect.TypeOf(msg.msg).Kind().String())
 			err := p.writeMessage(msg.msg, msg.encoding)
 			if err != nil {
 				p.Disconnect()

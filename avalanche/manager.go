@@ -527,7 +527,7 @@ func (m *Manager) tick() {
 // getInvsForTick returns a list of the items we need to query for this engine
 // cycle
 func (m *Manager) getInvsForTick() []*wire.InvVect {
-	log.Debugf("total voterecord count: %d", len(m.voteRecords))
+	// log.Debugf("total voterecord count: %d", len(m.voteRecords))
 	maxSize := len(m.voteRecords)
 	if maxSize > maxQueriesPerRequest {
 		maxSize = maxQueriesPerRequest
@@ -558,7 +558,7 @@ func (m *Manager) getInvsForTick() []*wire.InvVect {
 		}
 	}
 
-	log.Debugf("query inv count count: %d", len(invs))
+	// log.Debugf("query inv count count: %d", len(invs))
 	return invs
 }
 
